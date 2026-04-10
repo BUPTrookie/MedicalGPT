@@ -339,3 +339,23 @@ loss 计算在 `trl/trainer/grpo_trainer.py` 的 `_compute_loss` 方法中：
 | 算 ratio | 第 2179 行 | `coef_1 = torch.exp(log_importance_weights)` |
 | PPO-Clip | 第 2196-2204 行 | `coef_2 = clamp(coef_1, ...)`, `per_token_loss = -min(coef_1*adv, coef_2*adv)` |
 | 聚合 loss | 第 2225-2228 行 | 序列内 token 平均，再跨序列平均 |
+
+---
+
+## 8. 通俗总结：从 query 到 loss 的全过程
+
+### 直觉描述
+
+1. **一个模型跑同一个 query 的多个回答**，对每个回答打分（准确度 + 格式）
+2. 取组内平均值，各自的分减去平均值再除以标准差，得到各自的 **advantage**（"比平均水平好多少"）
+3. 拿**生成时刻**的模型参数算出这些回答的 token 概率（logp_old），再拿**当前更新后**的模型参数重新算一遍概率（logp_new），算出概率比 ratio = exp(logp_new - logp_old)
+4. 每条回答统一用 `loss = -min(ratio × advantage, clamp(ratio) × advantage)` 计算。advantage 为正的回答（好回答）loss 为负，梯度下降会提高其概率；advantage 为负的回答（差回答）loss 为正，梯度下降会降低其概率。好坏的区分由 advantage 的正负号自动完成，不需要手动分组
+5. ratio 被截断在 [0.8, 1.2] 范围内（PPO-Clip），防止策略更新步子太大
+
+### 常见误解澄清
+
+| 误解 | 实际情况 |
+|---|---|
+| logp_old 来自"原始基座模型"（LoRA 热插拔回去） | logp_old 是**生成那一刻的策略参数**算出的概率，生成完就存好了。old 和 new 是"上一步的自己"和"这一步的自己"，不是"基座"和"当前" |
+| 好回答概率减去坏回答概率就是 loss | 不是显式分组相减，而是所有回答走同一个公式，advantage 的正负号自动决定鼓励还是抑制 |
+| 最后减去 KL 散度防止偏移太远 | GRPO 原始论文确实有 KL 项，但本项目 `beta=0.0`，靠 PPO-Clip 的 ratio 截断隐式约束新旧策略距离，效果类似但实现不同 |
